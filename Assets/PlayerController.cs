@@ -2,22 +2,29 @@ using UnityEngine;
 
 public class PlayerController : MonoBehaviour
 {
-    public float maxInk = 100f;          // Maximum amount of ink
-    public float minInkPercentage = 0.05f; // Ink percentage at which the player runs out (5%)
-    public float inkConsumptionRate = 10f; // Rate at which ink is consumed per unit distance
-    public float refillAmount = 50f;       // Amount of ink refilled at refill points
+    public float maxInk = 100f;             // Maximum amount of ink
+    public float minInkPercentage = 0.05f;  // Ink percentage at which the player runs out (5%)
+    public float inkConsumptionRate = 1f;  // Rate at which ink is consumed per unit distance
+    public float refillAmount = 50f;        // Amount of ink refilled at refill points
 
-    private float currentInk;            // Current ink level
-    private Vector3 originalScale;       // Original scale of the ink drop
-    private bool isDragging = false;     // Is the player currently dragging the ink drop
-    private Vector3 dragOffset;          // Offset between touch point and ink drop position
+    public float moveSpeed = 5f;            // Speed factor for movement towards the target
+    public float steeringSpeed = 5f;        // Speed at which the ink drop turns towards the target
+    public float maxVelocity = 10f;         // Maximum velocity of the ink drop
+
+    private float currentInk;               // Current ink level
+    private Vector3 originalScale;          // Original scale of the ink drop
+    private bool isDragging = false;        // Is the player currently dragging the ink drop
+    private Vector2 targetPosition;         // Target position the ink drop moves towards
     private Camera mainCamera;
+    private Rigidbody2D rb;
+    public PolygonCollider2D boundaryCollider;
 
     void Start()
     {
         currentInk = maxInk;
         originalScale = transform.localScale;
         mainCamera = Camera.main;
+        rb = GetComponent<Rigidbody2D>();
     }
 
     void Update()
@@ -27,9 +34,15 @@ public class PlayerController : MonoBehaviour
 
     void FixedUpdate()
     {
-        if (isDragging)
+        if (HasInk())
         {
+            MoveTowardsTarget();
             ConsumeInk();
+            ConfineToBoundary();
+        }
+        else
+        {
+            rb.velocity = Vector2.zero; // Stop movement when out of ink
         }
     }
 
@@ -49,14 +62,13 @@ public class PlayerController : MonoBehaviour
                     if (IsTouchingPlayer(touchPos))
                     {
                         isDragging = true;
-                        dragOffset = transform.position - touchPos;
                     }
                     break;
 
                 case TouchPhase.Moved:
-                    if (isDragging && HasInk())
+                    if (isDragging)
                     {
-                        transform.position = touchPos + dragOffset;
+                        targetPosition = touchPos;
                     }
                     break;
 
@@ -76,16 +88,15 @@ public class PlayerController : MonoBehaviour
             if (IsTouchingPlayer(mousePos))
             {
                 isDragging = true;
-                dragOffset = transform.position - mousePos;
             }
         }
         if (Input.GetMouseButton(0))
         {
-            if (isDragging && HasInk())
+            if (isDragging)
             {
                 Vector3 mousePos = mainCamera.ScreenToWorldPoint(Input.mousePosition);
                 mousePos.z = 0f;
-                transform.position = mousePos + dragOffset;
+                targetPosition = mousePos;
             }
         }
         if (Input.GetMouseButtonUp(0))
@@ -101,12 +112,44 @@ public class PlayerController : MonoBehaviour
         return collider.OverlapPoint(position);
     }
 
+    void MoveTowardsTarget()
+    {
+        if (isDragging)
+        {
+            // Calculate the direction to the target
+            Vector2 direction = ((Vector2)targetPosition - rb.position).normalized;
+
+            // Calculate the steering force
+            Vector2 desiredVelocity = direction * moveSpeed;
+            Vector2 steering = desiredVelocity - rb.velocity;
+
+            // Limit the steering force
+            steering = Vector2.ClampMagnitude(steering, steeringSpeed);
+
+            // Apply the steering force
+            rb.AddForce(steering, ForceMode2D.Force);
+
+            // Limit the maximum velocity
+            rb.velocity = Vector2.ClampMagnitude(rb.velocity, maxVelocity);
+
+            // Rotate the ink drop to face the movement direction
+            if (rb.velocity.sqrMagnitude > 0.1f)
+            {
+                float angle = Mathf.Atan2(rb.velocity.y, rb.velocity.x) * Mathf.Rad2Deg - 90f;
+                rb.rotation = angle;
+            }
+        }
+        else
+        {
+            // Slow down gradually when not dragging
+            rb.velocity = Vector2.Lerp(rb.velocity, Vector2.zero, Time.fixedDeltaTime * steeringSpeed);
+        }
+    }
+
     void ConsumeInk()
     {
-        // Calculate the distance moved since the last frame
-        float distanceMoved = (transform.position - (Vector3)dragOffset).magnitude;
-
-        // Consume ink based on distance moved
+        // Consume ink based on the distance moved since the last frame
+        float distanceMoved = rb.velocity.magnitude * Time.fixedDeltaTime;
         float inkUsed = distanceMoved * inkConsumptionRate;
         currentInk -= inkUsed;
 
@@ -115,13 +158,6 @@ public class PlayerController : MonoBehaviour
 
         // Update the scale of the ink drop
         UpdateInkDropScale();
-
-        // Check if ink has run out
-        if (!HasInk())
-        {
-            isDragging = false;
-            // Optionally, trigger an event or feedback to the player
-        }
     }
 
     void UpdateInkDropScale()
@@ -144,6 +180,22 @@ public class PlayerController : MonoBehaviour
         currentInk += refillAmount;
         currentInk = Mathf.Min(currentInk, maxInk);
         UpdateInkDropScale();
+    }
+
+    void ConfineToBoundary()
+    {
+        if (!IsInsideBoundary(rb.position))
+        {
+            // The ink drop is outside the boundary; adjust its position
+            Vector2 closestPoint = boundaryCollider.ClosestPoint(rb.position);
+            rb.position = closestPoint;
+            rb.velocity = Vector2.zero; // Stop movement to prevent sliding along the edge
+        }
+    }
+
+    bool IsInsideBoundary(Vector2 position)
+    {
+        return boundaryCollider.OverlapPoint(position);
     }
 
     void OnTriggerEnter2D(Collider2D other)
